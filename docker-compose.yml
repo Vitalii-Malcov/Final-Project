@@ -1,0 +1,44 @@
+services:
+  db:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      # Эти переменные читает ТОЛЬКО образ mysql при первом создании тома: он создаёт
+      # базу и пользователя. Значения подставляются из файла .env рядом с compose-файлом.
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in .env}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?Set MYSQL_DATABASE in .env}
+      MYSQL_USER: ${MYSQL_USER:?Set MYSQL_USER in .env}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:?Set MYSQL_PASSWORD in .env}
+    # ports НЕ указан намеренно: база доступна только внутри сети compose (web ходит к ней
+    # по имени «db»). Наружу порт 3306 не торчит: не конфликтует с MySQL на хосте и
+    # недоступен из интернета на сервере.
+    volumes:
+      - mysql_data:/var/lib/mysql   # данные переживают пересоздание контейнера
+    healthcheck:
+      # «Контейнер запущен» не значит «MySQL принимает подключения»: первая
+      # инициализация занимает десятки секунд. Healthcheck говорит, когда база реально готова.
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 30s
+
+  web:
+    build: .
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      # Перекрывают значения из .env: внутри сети compose база называется «db»,
+      # а не 127.0.0.1 (так в .env для локальной разработки без Docker).
+      MYSQL: "True"
+      MYSQL_HOST: db
+      MYSQL_PORT: "3306"
+      DEBUG: ${DEBUG:-False}
+    depends_on:
+      db:
+        condition: service_healthy   # web стартует, только когда db прошла healthcheck
+    ports:
+      - "${WEB_PORT:-8000}:8000"
+
+volumes:
+  mysql_data:

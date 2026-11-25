@@ -30,6 +30,18 @@ class IsTenant(BasePermission):
         return bool(user and user.is_authenticated and user.role == Role.TENANT)
 
 
+class IsTenantOrReadOnly(BasePermission):
+    """Читать может любой, писать — только арендатор (например, отзывы)."""
+
+    message = 'Only tenants can perform this action.'
+
+    def has_permission(self, request, view):
+        if request.method in SAFE_METHODS:
+            return True
+        user = request.user
+        return bool(user and user.is_authenticated and user.role == Role.TENANT)
+
+
 class IsLandlordOrReadOnly(BasePermission):
     """Читать может любой, изменять — только арендодатель."""
 

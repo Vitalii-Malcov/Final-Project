@@ -1,0 +1,14 @@
+# Не копируем в образ: секреты, окружение разработчика, мусор.
+.env
+.venv/
+.git/
+.idea/
+.vscode/
+__pycache__/
+*.py[cod]
+db.sqlite3
+staticfiles/
+media/
+Dockerfile
+docker-compose.yml
+.dockerignore
