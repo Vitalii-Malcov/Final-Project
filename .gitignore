@@ -1,0 +1,16 @@
+# Python
+__pycache__/
+*.py[cod]
+
+# Окружение и секреты (в git попадает только .env.example)
+.venv/
+.env
+
+# Django
+db.sqlite3
+staticfiles/
+media/
+
+# IDE
+.idea/
+.vscode/
