@@ -145,9 +145,8 @@ class BookingCreateTests(BookingTestBase):
         self.assertEqual(self.create(10, 12, listing=hidden).status_code, 400)
 
     def test_cannot_book_own_listing(self):
-        # Арендодатель по роли получил бы 403; чтобы проверить само правило, даём владельцу роль арендатора.
-        self.landlord.role = Role.TENANT
-        self.landlord.save()
+        # Без роли арендатора владелец получил бы 403; чтобы проверить само правило, добавляем ему группу tenant.
+        self.landlord.add_roles(Role.TENANT)
         response = self.create(10, 12, user=self.landlord)
         self.assertEqual(response.status_code, 400)
         self.assertIn('listing', response.json())

@@ -2,6 +2,7 @@ from datetime import timedelta
 from decimal import Decimal
 from uuid import uuid4
 
+from django.contrib.auth.models import Group, Permission
 from django.test import RequestFactory, override_settings
 from django.utils import timezone
 from rest_framework.test import APIClient, APITestCase, APITransactionTestCase
@@ -26,10 +27,15 @@ FAST_HASHER = override_settings(PASSWORD_HASHERS=['django.contrib.auth.hashers.M
 # Их импортируют тесты остальных приложений. Классы TestCase отсюда НЕ импортируем
 # (только базовые), чтобы тесты не запускались дважды.
 
-def make_user(email, role=Role.TENANT, **extra):
-    return User.objects.create_user(
-        email=email, password=PASSWORD, first_name='Test', last_name='User', role=role, **extra
+def make_user(email, roles=Role.TENANT, **extra):
+    """roles — имя роли или список имён: make_user('a@x.com', Role.LANDLORD)
+    или make_user('a@x.com', [Role.TENANT, Role.LANDLORD]). Роли = группы,
+    созданные миграцией users/0002 (в тестовой базе они уже есть)."""
+    user = User.objects.create_user(
+        email=email, password=PASSWORD, first_name='Test', last_name='User', **extra
     )
+    user.add_roles(*([roles] if isinstance(roles, str) else roles))
+    return user
 
 
 def make_listing(owner, **overrides):
@@ -73,7 +79,14 @@ class BaseAPITestCase(APITestCase):
 
 @FAST_HASHER
 class BaseAPITransactionTestCase(APITransactionTestCase):
-    """Для тестов с потоками: транзакции реально коммитятся, как в боевой работе."""
+    """Для тестов с потоками: транзакции реально коммитятся, как в боевой работе.
+
+    serialized_rollback: после каждого такого теста таблицы очищаются (flush), а вместе с
+    ними исчезли бы группы-роли и их права, созданные миграцией. Этот флаг заставляет
+    Django восстановить данные миграций перед следующим тестом.
+    """
+
+    serialized_rollback = True
 
 
 # ---------------------------------------------------------------- тесты core
@@ -195,3 +208,147 @@ class PaginationTests(BaseAPITestCase):
         for page in range(1, 12):
             ids += [x['id'] for x in self.client.get(f'{API}listings/?page={page}').json()['results']]
         self.assertEqual((len(ids), len(set(ids))), (105, 105))  # стабильный порядок: ничего не потеряно и не повторено
+
+
+# ------------------------------------------------- роли = группы + permissions
+
+def payload_for_listing():
+    return {'title': 'Cosy flat', 'description': 'A cosy flat in the city centre for guests.',
+            'city': 'Berlin', 'address': 'Str. 1', 'price': '90.00', 'rooms': 2, 'housing_type': 'apartment'}
+
+
+def day_iso(offset):
+    return (timezone.localdate() + timedelta(days=offset)).isoformat()
+
+
+def revoke(role, perm):
+    """Забрать у группы-роли право 'приложение.действие_модель' (как это сделал бы админ)."""
+    app_label, codename = perm.split('.')
+    Group.objects.get(name=role).permissions.remove(
+        Permission.objects.get(content_type__app_label=app_label, codename=codename))
+
+
+class RoleGroupsMigrationTests(BaseAPITestCase):
+    """Группы и права создаёт миграция users/0002: в тестовой базе они уже должны быть."""
+
+    EXPECTED = {
+        'landlord': {'listings.add_listing', 'listings.change_listing', 'listings.delete_listing',
+                     'bookings.change_booking'},
+        'tenant': {'bookings.add_booking', 'reviews.add_review'},
+    }
+
+    def test_groups_have_exactly_the_expected_permissions(self):
+        for name, expected in self.EXPECTED.items():
+            with self.subTest(group=name):
+                group = Group.objects.get(name=name)
+                got = {f'{p.content_type.app_label}.{p.codename}'
+                       for p in group.permissions.select_related('content_type')}
+                self.assertEqual(got, expected)
+
+
+class MultiRoleTests(BaseAPITestCase):
+    def test_user_with_two_roles_lists_and_books_someone_elses_listing(self):
+        both = make_user('both@example.com', [Role.TENANT, Role.LANDLORD])
+        owner = make_user('owner@example.com', Role.LANDLORD)
+
+        created = client_for(both).post(f'{API}listings/', payload_for_listing(), format='json')
+        self.assertEqual(created.status_code, 201)
+
+        foreign = make_listing(owner)
+        booked = client_for(both).post(f'{API}bookings/', {
+            'listing': str(foreign.pk), 'start_date': day_iso(10), 'end_date': day_iso(12)}, format='json')
+        self.assertEqual(booked.status_code, 201)
+
+        # Своё же жильё он по-прежнему бронировать не может (правило владельца, а не роли).
+        own = client_for(both).post(f'{API}bookings/', {
+            'listing': created.json()['id'], 'start_date': day_iso(10), 'end_date': day_iso(12)}, format='json')
+        self.assertEqual(own.status_code, 400)
+
+        # А как арендодатель он подтверждает заявки на своё жильё.
+        guest = make_user('guest@example.com')
+        booking = make_booking(Listing.objects.get(pk=created.json()['id']), guest, 5, 7)
+        self.assertEqual(client_for(both).patch(f'{API}bookings/{booking.pk}/confirm/').status_code, 200)
+
+    def test_tenant_adds_landlord_role_and_can_then_create_listing(self):
+        user = make_user('grow@example.com', Role.TENANT)
+        client = client_for(user)
+        before = client.post(f'{API}listings/', payload_for_listing(), format='json')
+        self.assertEqual(before.status_code, 403)
+
+        self.assertEqual(client.post(f'{API}auth/me/roles/', {'role': 'landlord'}, format='json').status_code, 200)
+
+        # Тот же самый токен: права берутся из БД, а не из claim в токене.
+        after = client.post(f'{API}listings/', payload_for_listing(), format='json')
+        self.assertEqual(after.status_code, 201)
+
+
+class PermissionsComeFromGroupsTests(BaseAPITestCase):
+    """Если у группы забрать право, действие сразу даёт 403: проверяется именно право, не имя группы."""
+
+    def setUp(self):
+        self.landlord = make_user('landlord@example.com', Role.LANDLORD)
+        self.tenant = make_user('tenant@example.com', Role.TENANT)
+        self.listing = make_listing(self.landlord)
+
+    def booking_payload(self):
+        return {'listing': str(self.listing.pk), 'start_date': day_iso(10), 'end_date': day_iso(12)}
+
+    def test_add_listing(self):
+        client = client_for(self.landlord)
+        self.assertEqual(client.post(f'{API}listings/', payload_for_listing(), format='json').status_code, 201)
+        revoke('landlord', 'listings.add_listing')
+        self.assertEqual(client.post(f'{API}listings/', payload_for_listing(), format='json').status_code, 403)
+        self.assertEqual(client.get(f'{API}listings/my/').status_code, 403)
+
+    def test_change_listing_covers_put_patch_and_toggle(self):
+        client = client_for(self.landlord)
+        url = f'{API}listings/{self.listing.pk}/'
+        revoke('landlord', 'listings.change_listing')
+        self.assertEqual(client.patch(url, {'title': 'New title here'}, format='json').status_code, 403)
+        self.assertEqual(client.patch(f'{url}toggle-status/', {}, format='json').status_code, 403)
+        self.assertEqual(client.get(url).status_code, 200)  # чтение остаётся публичным
+
+    def test_delete_listing(self):
+        revoke('landlord', 'listings.delete_listing')
+        self.assertEqual(client_for(self.landlord).delete(f'{API}listings/{self.listing.pk}/').status_code, 403)
+        self.assertTrue(Listing.objects.filter(pk=self.listing.pk).exists())
+
+    def test_permission_alone_is_not_enough_without_ownership(self):
+        other = make_user('other@example.com', Role.LANDLORD)
+        response = client_for(other).patch(f'{API}listings/{self.listing.pk}/', {'title': 'Hijacked!'}, format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(response.json()['detail'], 'Only the owner can modify this object.')
+
+    def test_add_booking(self):
+        revoke('tenant', 'bookings.add_booking')
+        client = client_for(self.tenant)
+        self.assertEqual(client.post(f'{API}bookings/', self.booking_payload(), format='json').status_code, 403)
+        self.assertEqual(client.get(f'{API}bookings/').status_code, 403)
+
+    def test_change_booking_blocks_confirm_reject_and_requests(self):
+        booking = make_booking(self.listing, self.tenant, 5, 7)
+        revoke('landlord', 'bookings.change_booking')
+        client = client_for(self.landlord)
+        self.assertEqual(client.get(f'{API}bookings/requests/').status_code, 403)
+        self.assertEqual(client.patch(f'{API}bookings/{booking.pk}/confirm/').status_code, 403)
+        self.assertEqual(client.patch(f'{API}bookings/{booking.pk}/reject/').status_code, 403)
+        booking.refresh_from_db()
+        self.assertEqual(booking.status, BookingStatus.PENDING)
+
+    def test_add_review(self):
+        make_booking(self.listing, self.tenant, -10, -7, BookingStatus.CONFIRMED)
+        url = f'{API}listings/{self.listing.pk}/reviews/'
+        revoke('tenant', 'reviews.add_review')
+        response = client_for(self.tenant).post(url, {'rating': 5, 'comment': 'Wonderful flat, very clean and quiet.'},
+                                                format='json')
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(APIClient().get(url).status_code, 200)
+
+    def test_superuser_passes_every_check(self):
+        admin = User.objects.create_superuser('root@example.com', 'x-secret-pass-1', first_name='R', last_name='R')
+        self.assertEqual(client_for(admin).post(f'{API}listings/', payload_for_listing(), format='json').status_code, 201)
+
+    def test_inactive_user_has_no_permissions(self):
+        self.landlord.is_active = False
+        self.landlord.save()
+        self.assertFalse(User.objects.get(pk=self.landlord.pk).has_perm('listings.add_listing'))

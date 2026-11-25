@@ -8,6 +8,7 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 
 from apps.users.serializers import (
+    AddRoleSerializer,
     LoginSerializer,
     LogoutSerializer,
     RegisterSerializer,
@@ -72,3 +73,22 @@ class MeView(RetrieveAPIView):
     def get_object(self):
         # Пользователь уже определён по токену; id в URL не нужен.
         return self.request.user
+
+
+class MyRolesView(APIView):
+    """POST auth/me/roles/ {"role": "landlord"} — добавить себе роль.
+
+    Идемпотентно: повторный запрос ничего не ломает и тоже отвечает 200.
+    Роль можно только ДОБАВИТЬ себе (себе, не другому: пользователь берётся из токена).
+    Удаления ролей нет — его в задании нет.
+    """
+
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request):
+        serializer = AddRoleSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        request.user.add_roles(serializer.validated_data['role'])
+        # Перечитываем пользователя: на объекте из запроса мог остаться кэш групп/прав.
+        user = type(request.user).objects.prefetch_related('groups').get(pk=request.user.pk)
+        return Response(UserSerializer(user).data)

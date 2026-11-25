@@ -15,7 +15,7 @@ from apps.bookings.serializers import (
     BookingStateFilterSerializer,
     BookingStatusFilterSerializer,
 )
-from apps.core.permissions import IsLandlord, IsTenant
+from apps.core.permissions import CanManageBookings, IsTenant
 from apps.listings.models import Listing
 
 
@@ -165,7 +165,7 @@ class BookingDetailView(RetrieveAPIView):
 class BookingRequestsView(ListAPIView):
     """GET bookings/requests/ — заявки на мои объявления (?status=). Только арендодатель."""
 
-    permission_classes = [IsLandlord]
+    permission_classes = [CanManageBookings]
     serializer_class = BookingSerializer
 
     def get_queryset(self):
@@ -184,7 +184,7 @@ class BookingConfirmView(GenericAPIView):
     Самое чувствительное место проекта: после подтверждения даты считаются занятыми.
     """
 
-    permission_classes = [IsLandlord]
+    permission_classes = [CanManageBookings]
     serializer_class = BookingSerializer
 
     def patch(self, request, pk):
@@ -234,7 +234,7 @@ class BookingConfirmView(GenericAPIView):
 class BookingRejectView(GenericAPIView):
     """PATCH bookings/<id>/reject/ — владелец отклоняет заявку."""
 
-    permission_classes = [IsLandlord]
+    permission_classes = [CanManageBookings]
     serializer_class = BookingSerializer
 
     def patch(self, request, pk):

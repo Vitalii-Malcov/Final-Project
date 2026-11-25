@@ -35,7 +35,7 @@ Views написаны на `APIView` и generic-классах DRF (не ViewSe
 
 | Таблица | Назначение | Ключевое |
 |---|---|---|
-| `users` | пользователи | `email` уникален, `role` = tenant / landlord, пароль хранится хешем |
+| `users` | пользователи | `email` уникален, роли — группы Django (`groups`), пароль хранится хешем |
 | `listings` | объявления | FK `owner`; индекс по `city`; составные `(is_active, price)`, `(is_active, rooms)`; индекс `housing_type`; цена `DECIMAL(10,2)` |
 | `listing_views` | один просмотр = одна строка | FK `listing`, FK `user` (NULL у анонимов, SET_NULL) |
 | `search_history` | одно ключевое слово = одна строка | индекс по `keyword`, FK `user` (NULL) |
@@ -46,15 +46,40 @@ Views написаны на `APIView` и generic-классах DRF (не ViewSe
 подзапросами (`Listing.objects.with_stats()`). Подзапросы, а не JOIN, чтобы счётчики просмотров
 и отзывов не умножались друг на друга. Без отзывов `avg_rating = null`.
 
-## Роли и защита маршрутов
+## Роли и права
 
-| Действие | Аноним | Арендатор | Арендодатель |
-|---|:-:|:-:|:-:|
-| Регистрация, вход, просмотр и поиск объявлений, отзывы (чтение) | ✔ | ✔ | ✔ |
-| Создание, правка, удаление, скрытие своих объявлений | — | — | ✔ (владелец) |
-| Создать бронь, отменить свою, смотреть свои брони | — | ✔ | — |
-| Подтвердить / отклонить заявку, смотреть заявки | — | — | ✔ (владелец объявления) |
-| Написать отзыв (после завершённого проживания) | — | ✔ | — |
+Роль — это стандартная группа `django.contrib.auth.models.Group` (`tenant`, `landlord`), а права —
+стандартные model permissions, выданные группам. Пользователь может состоять **в обеих группах**:
+арендодатель, который тоже снимает жильё, не нуждается во втором аккаунте.
+
+| Группа | Права | Что даёт |
+|---|---|---|
+| `landlord` | `listings.add_listing`, `listings.change_listing`, `listings.delete_listing`, `bookings.change_booking` | создавать, править, удалять и скрывать свои объявления; смотреть заявки, подтверждать и отклонять |
+| `tenant` | `bookings.add_booking`, `reviews.add_review` | бронировать, отменять и смотреть свои брони; писать отзывы |
+
+Группы и права создаёт миграция `users/0002_create_role_groups` (она сама создаёт model permissions
+нужных приложений, потому что штатный сигнал `post_migrate` срабатывает позже всех миграций, а на чистой
+базе в этот момент прав ещё нет). Миграция `0003` перенесла старое поле `role` в группы, `0004` удалила поле.
+Права можно менять в админке (Группы) без правки кода.
+
+| Действие | Аноним | Нужное право | Дополнительно |
+|---|:-:|---|---|
+| Регистрация, вход, просмотр и поиск объявлений, отзывы (чтение) | ✔ | — | |
+| Создать объявление | — | `listings.add_listing` | владелец берётся из токена |
+| Править / удалить / скрыть объявление | — | `change_listing` / `delete_listing` / `change_listing` | только владелец объявления |
+| Создать бронь, отменить свою, смотреть свои брони | — | `bookings.add_booking` | нельзя бронировать своё жильё (400) |
+| Заявки на мои объявления, подтвердить / отклонить | — | `bookings.change_booking` | только владелец объявления |
+| Написать отзыв | — | `reviews.add_review` | только после завершённого проживания |
+
+Права проверяет `user.has_perm(...)` по базе данных, а не роль из токена: если администратор забрал право у группы,
+это действует сразу, не дожидаясь окончания жизни access-токена. Суперпользователь проходит все проверки.
+Роли в токене (`roles`) нужны только фронтенду для выбора интерфейса.
+
+Роли при регистрации: поле `roles` (список), по умолчанию `["tenant"]`, можно `["tenant", "landlord"]`.
+Добавить роль позже: `POST auth/me/roles/ {"role": "landlord"}` (повтор безопасен). Новые права
+вступают в силу сразу, а `roles` в уже выданном токене обновится после refresh или нового входа.
+
+## Защита маршрутов
 
 Защита двухуровневая:
 
@@ -62,8 +87,9 @@ Views написаны на `APIView` и generic-классах DRF (не ViewSe
    на приватных путях (`auth/me/`, `auth/logout/`, `bookings/...`, `listings/my/`,
    `listings/searches/my/`) и на любой изменяющий запрос (POST/PUT/PATCH/DELETE) под `/api/v1/`.
    Публичны только `auth/register|login|refresh/`. Иначе ответ 401.
-2. **permission_classes** (`apps/core/permissions.py`): `IsLandlord`, `IsTenant`,
-   `IsLandlordOrReadOnly`, `IsTenantOrReadOnly`, `IsOwnerOrReadOnly`. Решают, кто может выполнить действие.
+2. **permission_classes** (`apps/core/permissions.py`): `IsLandlord`, `IsTenant`, `CanManageBookings`,
+   `IsLandlordOrReadOnly`, `IsTenantOrReadOnly`, `IsOwnerOrReadOnly`. Каждый проверяет конкретное
+   право через `has_perm` (см. таблицу выше); `IsOwnerOrReadOnly` дополнительно проверяет владельца объекта.
 
 JWT: access 30 минут, refresh 7 дней, с ротацией; старый refresh попадает в blacklist.
 Пагинация: 10 на странице, `?page_size=` до 100.
@@ -72,27 +98,28 @@ JWT: access 30 минут, refresh 7 дней, с ротацией; старый
 
 | Метод | URL | Кто | Описание |
 |---|---|---|---|
-| POST | `auth/register/` | все | регистрация (`re_password`, роль `tenant`/`landlord`) → 201 |
-| POST | `auth/login/` | все | `access`, `refresh`, `user`; роль в payload токена |
+| POST | `auth/register/` | все | регистрация (`re_password`, `roles`: по умолчанию `["tenant"]`) → 201 |
+| POST | `auth/login/` | все | `access`, `refresh`, `user`; роли (`roles`) в payload токена |
 | POST | `auth/refresh/` | все | новый access + новый refresh |
 | POST | `auth/logout/` | авторизованный | refresh в blacklist → 204 |
-| GET | `auth/me/` | авторизованный | текущий пользователь |
+| GET | `auth/me/` | авторизованный | текущий пользователь (`roles`) |
+| POST | `auth/me/roles/` | авторизованный | добавить себе роль `{"role": "landlord"}`, идемпотентно → 200 |
 | GET | `listings/` | все | активные объявления; фильтры ниже |
-| POST | `listings/` | арендодатель | создание, владелец берётся из токена |
+| POST | `listings/` | `add_listing` | создание, владелец берётся из токена |
 | GET | `listings/<id>/` | все | карточка (неактивные видит только владелец); просмотр записывается |
-| PUT/PATCH/DELETE | `listings/<id>/` | владелец | удаление при будущих confirmed-бронях → 409 |
-| PATCH | `listings/<id>/toggle-status/` | владелец | переключить или `{"is_active": false}` |
-| GET | `listings/my/` | арендодатель | свои объявления, включая неактивные |
+| PUT/PATCH/DELETE | `listings/<id>/` | владелец + `change_` / `delete_listing` | удаление при будущих confirmed-бронях → 409 |
+| PATCH | `listings/<id>/toggle-status/` | владелец + `change_listing` | переключить или `{"is_active": false}` |
+| GET | `listings/my/` | `add_listing` | свои объявления, включая неактивные |
 | GET | `listings/popular/` | все | по числу просмотров |
 | GET | `listings/searches/popular/` | все | популярные запросы, `?limit=` (1–100) |
 | GET | `listings/searches/my/` | авторизованный | своя история поиска |
-| GET / POST | `listings/<id>/reviews/` | GET все, POST арендатор | отзыв только после завершённого проживания, один на объявление |
-| GET / POST | `bookings/` | арендатор | свои брони (`?state=active\|completed\|cancelled\|rejected`) / создать |
+| GET / POST | `listings/<id>/reviews/` | GET все, POST `add_review` | отзыв только после завершённого проживания, один на объявление |
+| GET / POST | `bookings/` | `add_booking` | свои брони (`?state=active\|completed\|cancelled\|rejected`) / создать |
 | GET | `bookings/<id>/` | арендатор или владелец жилья | |
-| PATCH | `bookings/<id>/cancel/` | арендатор | pending/confirmed, не позже `start − N дней` |
-| GET | `bookings/requests/` | арендодатель | заявки на свои объявления, `?status=` |
-| PATCH | `bookings/<id>/confirm/` | владелец жилья | только pending |
-| PATCH | `bookings/<id>/reject/` | владелец жилья | только pending |
+| PATCH | `bookings/<id>/cancel/` | `add_booking`, своя бронь | pending/confirmed, не позже `start − N дней` |
+| GET | `bookings/requests/` | `change_booking` | заявки на свои объявления, `?status=` |
+| PATCH | `bookings/<id>/confirm/` | `change_booking`, владелец жилья | только pending |
+| PATCH | `bookings/<id>/reject/` | `change_booking`, владелец жилья | только pending |
 
 Фильтры `GET listings/`: `search` (все слова в заголовке или описании), `price_min`, `price_max`,
 `city`, `district` (без учёта регистра, точное совпадение), `rooms_min`, `rooms_max`,

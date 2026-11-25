@@ -1,8 +1,10 @@
 from django.contrib.auth.password_validation import validate_password
 from django.core.exceptions import ValidationError as DjangoValidationError
+from django.db import transaction
 from rest_framework import serializers
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
+from apps.users.choices.roles import Role
 from apps.users.models import User
 
 
@@ -11,8 +13,12 @@ class UserSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = User
-        fields = ('id', 'first_name', 'last_name', 'email', 'phone', 'role', 'date_joined')
+        fields = ('id', 'first_name', 'last_name', 'email', 'phone', 'roles', 'date_joined')
         read_only_fields = fields  # этим сериализатором только отдаём данные
+
+    # roles — свойство модели (список имён групп-ролей). Явное поле нужно, потому что
+    # ModelSerializer сам такое свойство не подхватит.
+    roles = serializers.ListField(child=serializers.CharField(), read_only=True)
 
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -20,15 +26,21 @@ class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True, style={'input_type': 'password'})
     re_password = serializers.CharField(write_only=True, style={'input_type': 'password'})
 
+    # Список ролей: по умолчанию только арендатор; можно обе. Пустой список — ошибка:
+    # пользователь без ролей ничего не сможет сделать. Лишнее/неизвестное имя -> 400.
+    roles = serializers.ListField(
+        child=serializers.ChoiceField(choices=Role.choices),
+        allow_empty=False, default=lambda: [Role.TENANT],  # callable: каждый раз новый список
+    )
+
     class Meta:
         model = User
-        fields = ('id', 'first_name', 'last_name', 'email', 'phone', 'role',
+        fields = ('id', 'first_name', 'last_name', 'email', 'phone', 'roles',
                   'password', 're_password')
         read_only_fields = ('id',)
         extra_kwargs = {
             'first_name': {'required': True, 'allow_blank': False},
             'last_name': {'required': True, 'allow_blank': False},
-            'role': {'required': True},  # явно выбираем роль, молчаливого дефолта нет
             # Стандартный UniqueValidator чувствителен к регистру и сработал бы
             # до нашего lower(); уникальность проверяем сами в validate_email.
             'email': {'validators': []},
@@ -60,8 +72,14 @@ class RegisterSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         validated_data.pop('re_password')
+        roles = list(dict.fromkeys(validated_data.pop('roles')))  # убираем повторы, порядок сохраняем
         # create_user, а не User.objects.create: только он хеширует пароль через set_password.
-        return User.objects.create_user(**validated_data)
+        # Пользователь и его роли создаются атомарно: если группы вдруг нет, не останется
+        # аккаунта без ролей, который нельзя будет создать повторно (email уже занят).
+        with transaction.atomic():
+            user = User.objects.create_user(**validated_data)
+            user.add_roles(*roles)
+        return user
 
 
 class LoginSerializer(TokenObtainPairSerializer):
@@ -70,9 +88,10 @@ class LoginSerializer(TokenObtainPairSerializer):
     @classmethod
     def get_token(cls, user):
         token = super().get_token(user)
-        # Роль в payload токена: фронтенд может сразу показать нужный интерфейс.
+        # Роли в payload токена: фронтенд может сразу показать нужный интерфейс.
         # Права при этом проверяются по БД (см. core/permissions.py), не по этому полю.
-        token['role'] = user.role
+        # Снимок на момент выдачи: после добавления роли надо обновить токен.
+        token['roles'] = user.roles
         return token
 
     def validate(self, attrs):
@@ -85,3 +104,7 @@ class LoginSerializer(TokenObtainPairSerializer):
 
 class LogoutSerializer(serializers.Serializer):
     refresh = serializers.CharField()
+
+
+class AddRoleSerializer(serializers.Serializer):
+    role = serializers.ChoiceField(choices=Role.choices)

@@ -1,7 +1,5 @@
 from django.contrib.auth.base_user import BaseUserManager
 
-from apps.users.choices.roles import Role
-
 
 class UserManager(BaseUserManager):
     """Менеджер нужен, потому что стандартный create_user ждёт username, а у нас вход по email."""
@@ -29,7 +27,6 @@ class UserManager(BaseUserManager):
     def create_superuser(self, email, password=None, **extra_fields):
         extra_fields.setdefault('is_staff', True)       # доступ в админку
         extra_fields.setdefault('is_superuser', True)   # все права без явной выдачи
-        extra_fields.setdefault('role', Role.LANDLORD)
         if not extra_fields['is_staff'] or not extra_fields['is_superuser']:
             raise ValueError('У суперпользователя is_staff и is_superuser должны быть True.')
         return self._create_user(email, password, **extra_fields)

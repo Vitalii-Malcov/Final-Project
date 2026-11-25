@@ -1,4 +1,4 @@
-from django.contrib.auth.models import AbstractBaseUser, PermissionsMixin
+from django.contrib.auth.models import AbstractBaseUser, Group, PermissionsMixin
 from django.db import models
 from django.utils import timezone
 
@@ -8,7 +8,11 @@ from apps.users.managers import UserManager
 
 
 class User(UUIDv7Model, AbstractBaseUser, PermissionsMixin):
-    """Пользователь системы: арендатор или арендодатель.
+    """Пользователь системы.
+
+    Роли (арендатор / арендодатель) — это группы Django (поле groups из PermissionsMixin),
+    а не отдельное поле: так один человек может быть и арендатором, и арендодателем,
+    а права задаются стандартными permissions на группах.
 
     Наследование:
       * UUIDv7Model      — первичный ключ UUID v7;
@@ -22,7 +26,6 @@ class User(UUIDv7Model, AbstractBaseUser, PermissionsMixin):
     # unique=True создаёт уникальный индекс: он же ускоряет поиск при логине.
     email = models.EmailField(unique=True)
     phone = models.CharField(max_length=32, blank=True)
-    role = models.CharField(max_length=16, choices=Role.choices, default=Role.TENANT)
 
     is_staff = models.BooleanField(default=False)   # пускать ли в админку
     is_active = models.BooleanField(default=True)   # False = «удалён» без потери истории броней
@@ -41,9 +44,20 @@ class User(UUIDv7Model, AbstractBaseUser, PermissionsMixin):
         return self.email
 
     @property
-    def is_landlord(self):
-        return self.role == Role.LANDLORD
+    def roles(self):
+        """Имена ролей пользователя, например ['landlord', 'tenant'].
 
-    @property
-    def is_tenant(self):
-        return self.role == Role.TENANT
+        Берём только группы-роли: администратор может завести и другие группы,
+        в API они не нужны. groups.all() использует prefetch_related, если он был
+        (так в админке список пользователей не делает запрос на каждую строку).
+        """
+        return sorted(g.name for g in self.groups.all() if g.name in Role.values)
+
+    def add_roles(self, *names):
+        """Добавить роли (идемпотентно: повторное добавление ничего не меняет).
+
+        Группа обязана существовать — её создала миграция. Если группы нет, это ошибка
+        настройки, а не ошибка пользователя, поэтому get() упадёт громко, а не молча
+        выдаст пользователю роль без прав.
+        """
+        self.groups.add(*(Group.objects.get(name=name) for name in names))

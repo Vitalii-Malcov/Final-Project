@@ -1,3 +1,4 @@
+from django.contrib.auth.models import Group
 from rest_framework.test import APIClient
 from rest_framework_simplejwt.token_blacklist.models import BlacklistedToken
 from rest_framework_simplejwt.tokens import AccessToken
@@ -15,7 +16,7 @@ ME = f'{API}auth/me/'
 
 def register_payload(**overrides):
     data = {'first_name': 'Anna', 'last_name': 'Berg', 'email': 'anna@example.com', 'phone': '+491234',
-            'role': 'tenant', 'password': PASSWORD, 're_password': PASSWORD}
+            'roles': ['tenant'], 'password': PASSWORD, 're_password': PASSWORD}
     data.update(overrides)
     return data
 
@@ -35,7 +36,8 @@ class UserManagerTests(BaseAPITestCase):
     def test_create_superuser(self):
         admin = User.objects.create_superuser('root@example.com', 'secret-pass-1', first_name='R', last_name='R')
         self.assertTrue(admin.is_staff and admin.is_superuser)
-        self.assertEqual(admin.role, Role.LANDLORD)
+        # Суперпользователь не состоит в группах, но has_perm у него всегда True.
+        self.assertTrue(admin.has_perm('listings.add_listing') and admin.has_perm('bookings.add_booking'))
 
     def test_create_superuser_rejects_wrong_flags(self):
         with self.assertRaises(ValueError):
@@ -53,7 +55,8 @@ class RegisterTests(BaseAPITestCase):
         self.assertEqual(response.status_code, 201)
         body = response.json()
         self.assertEqual(body['email'], 'anna@example.com')
-        self.assertEqual(body['role'], 'tenant')
+        self.assertEqual(body['roles'], ['tenant'])
+        self.assertNotIn('role', body)
         self.assertNotIn('password', body)
         self.assertNotIn('re_password', body)
 
@@ -67,11 +70,27 @@ class RegisterTests(BaseAPITestCase):
         self.assertTrue(user.check_password(PASSWORD))
         self.assertNotEqual(user.password, PASSWORD)
 
-    def test_both_roles_can_register(self):
-        for i, role in enumerate(('tenant', 'landlord')):
-            with self.subTest(role=role):
-                r = self.client.post(REGISTER, register_payload(email=f'r{i}@example.com', role=role), format='json')
-                self.assertEqual((r.status_code, r.json()['role']), (201, role))
+    def test_each_role_and_both_roles_can_register(self):
+        cases = (['tenant'], ['landlord'], ['tenant', 'landlord'])
+        for i, roles in enumerate(cases):
+            with self.subTest(roles=roles):
+                r = self.client.post(REGISTER, register_payload(email=f'r{i}@example.com', roles=roles), format='json')
+                self.assertEqual((r.status_code, r.json()['roles']), (201, sorted(roles)))
+                self.assertEqual(User.objects.get(email=f'r{i}@example.com').roles, sorted(roles))
+
+    def test_roles_default_to_tenant_and_duplicates_are_collapsed(self):
+        payload = register_payload()
+        payload.pop('roles')
+        self.assertEqual(self.client.post(REGISTER, payload, format='json').json()['roles'], ['tenant'])
+        r = self.client.post(REGISTER, register_payload(email='d@example.com', roles=['landlord', 'landlord']), format='json')
+        self.assertEqual(r.json()['roles'], ['landlord'])
+
+    def test_roles_are_groups_with_permissions(self):
+        self.client.post(REGISTER, register_payload(roles=['landlord']), format='json')
+        user = User.objects.get(email='anna@example.com')
+        self.assertEqual(list(user.groups.values_list('name', flat=True)), ['landlord'])
+        self.assertTrue(user.has_perm('listings.add_listing'))
+        self.assertFalse(user.has_perm('bookings.add_booking'))
 
     def test_duplicate_email_is_rejected_case_insensitively(self):
         self.client.post(REGISTER, register_payload(), format='json')
@@ -91,9 +110,14 @@ class RegisterTests(BaseAPITestCase):
                 self.assertEqual(response.status_code, 400)
                 self.assertIn('password', response.json())
 
-    def test_invalid_role_and_missing_fields(self):
-        self.assertEqual(self.client.post(REGISTER, register_payload(role='admin'), format='json').status_code, 400)
-        for field in ('first_name', 'last_name', 'email', 'role', 'password', 're_password'):
+    def test_invalid_roles_and_missing_fields(self):
+        for bad in (['admin'], [], 'tenant', ['tenant', 'admin']):
+            with self.subTest(roles=bad):
+                r = self.client.post(REGISTER, register_payload(roles=bad), format='json')
+                self.assertEqual(r.status_code, 400)
+                self.assertIn('roles', r.json())
+        self.assertFalse(User.objects.exists())
+        for field in ('first_name', 'last_name', 'email', 'password', 're_password'):
             with self.subTest(missing=field):
                 payload = register_payload()
                 payload.pop(field)
@@ -118,12 +142,14 @@ class LoginTests(BaseAPITestCase):
         self.assertEqual(response.status_code, 200)
         body = response.json()
         self.assertEqual({'access', 'refresh', 'user'}, set(body))
-        self.assertEqual((body['user']['email'], body['user']['role']), ('login@example.com', 'landlord'))
+        self.assertEqual((body['user']['email'], body['user']['roles']), ('login@example.com', ['landlord']))
         self.assertNotIn('password', body['user'])
 
-    def test_role_is_in_token_payload(self):
+    def test_roles_are_in_token_payload(self):
+        self.user.add_roles(Role.TENANT)
         body = self.client.post(LOGIN, {'email': 'login@example.com', 'password': PASSWORD}, format='json').json()
-        self.assertEqual(AccessToken(body['access'])['role'], 'landlord')
+        self.assertEqual(AccessToken(body['access'])['roles'], ['landlord', 'tenant'])
+        self.assertNotIn('role', AccessToken(body['access']))
 
     def test_email_is_case_insensitive(self):
         response = self.client.post(LOGIN, {'email': 'LOGIN@Example.com', 'password': PASSWORD}, format='json')
@@ -201,3 +227,62 @@ class RefreshAndLogoutTests(BaseAPITestCase):
     def test_logout_requires_access_token(self):
         response = APIClient().post(LOGOUT, {'refresh': self.tokens['refresh']}, format='json')
         self.assertEqual(response.status_code, 401)
+
+
+ME_ROLES = f'{API}auth/me/roles/'
+
+
+class MyRolesTests(BaseAPITestCase):
+    def setUp(self):
+        self.user = make_user('tenant@example.com', Role.TENANT)
+
+    def test_add_role_is_idempotent(self):
+        client = client_for(self.user)
+        for _ in range(2):  # повторный запрос не ломается и не дублирует группу
+            response = client.post(ME_ROLES, {'role': 'landlord'}, format='json')
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()['roles'], ['landlord', 'tenant'])
+        self.assertEqual(self.user.groups.count(), 2)
+        self.assertEqual(client.get(ME).json()['roles'], ['landlord', 'tenant'])
+
+    def test_adding_a_role_grants_its_permissions_immediately(self):
+        self.assertFalse(User.objects.get(pk=self.user.pk).has_perm('listings.add_listing'))
+        client_for(self.user).post(ME_ROLES, {'role': 'landlord'}, format='json')
+        self.assertTrue(User.objects.get(pk=self.user.pk).has_perm('listings.add_listing'))
+
+    def test_invalid_or_missing_role_is_rejected(self):
+        client = client_for(self.user)
+        for body in ({'role': 'admin'}, {'role': ''}, {}, {'role': ['landlord']}):
+            with self.subTest(body=body):
+                self.assertEqual(client.post(ME_ROLES, body, format='json').status_code, 400)
+        self.assertEqual(self.user.roles, ['tenant'])
+
+    def test_requires_authentication(self):
+        self.assertEqual(APIClient().post(ME_ROLES, {'role': 'landlord'}, format='json').status_code, 401)
+
+    def test_user_cannot_add_role_to_someone_else(self):
+        other = make_user('other@example.com', Role.TENANT)
+        client_for(self.user).post(ME_ROLES, {'role': 'landlord', 'id': str(other.pk), 'email': other.email}, format='json')
+        self.assertEqual(other.roles, ['tenant'])
+
+
+class AdminRolesTests(BaseAPITestCase):
+    """В админке роли видны в списке пользователей и выбираются при создании (поле groups)."""
+
+    def setUp(self):
+        self.admin = User.objects.create_superuser('root@example.com', PASSWORD, first_name='R', last_name='R')
+        self.client.force_login(self.admin)
+
+    def test_changelist_shows_roles(self):
+        make_user('both@example.com', [Role.TENANT, Role.LANDLORD])
+        response = self.client.get('/admin/users/user/')
+        self.assertEqual(response.status_code, 200)
+        self.assertContains(response, 'landlord, tenant')
+
+    def test_add_form_saves_groups(self):
+        response = self.client.post('/admin/users/user/add/', {
+            'email': 'new@example.com', 'first_name': 'N', 'last_name': 'U', 'phone': '',
+            'groups': [Group.objects.get(name='landlord').pk], 'password1': PASSWORD, 'password2': PASSWORD,
+        })
+        self.assertEqual(response.status_code, 302, getattr(response, 'context', None) and response.context['adminform'].form.errors)
+        self.assertEqual(User.objects.get(email='new@example.com').roles, ['landlord'])
