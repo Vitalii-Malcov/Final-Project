@@ -1,3 +1,4 @@
+from django.db.models import F
 from rest_framework import serializers
 
 from apps.listings.choices.housing_types import HousingType
@@ -74,7 +75,16 @@ class ListingFilterSerializer(serializers.Serializer):
         # '-id' даёт стабильный порядок «новые первыми».
         ordering = attrs.get('ordering', DEFAULT_ORDERING)
         field = ORDERING_FIELDS[ordering.lstrip('-')]
-        primary = f'-{field}' if ordering.startswith('-') else field
+        descending = ordering.startswith('-')
+        if field == 'avg_rating':
+            # У объявлений без отзывов avg_rating = NULL. Что делает MySQL с NULL по умолчанию:
+            # при ASC ставит их ПЕРВЫМИ, при DESC ПОСЛЕДНИМИ, и для пользователя «лучшие
+            # по рейтингу» внезапно начинались бы с неоценённых. nulls_last=True ставит
+            # неоценённые в конец в ОБОИХ направлениях. MySQL не умеет NULLS LAST сам,
+            # Django эмулирует его (ORDER BY (col IS NULL), col).
+            primary = F(field).desc(nulls_last=True) if descending else F(field).asc(nulls_last=True)
+        else:
+            primary = f'-{field}' if descending else field
         attrs['order_by'] = (primary, '-id')
         return attrs
 

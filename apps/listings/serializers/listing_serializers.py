@@ -28,7 +28,7 @@ class ListingSerializer(serializers.ModelSerializer):
     owner = OwnerSerializer(read_only=True)
     views_count = serializers.IntegerField(read_only=True)
     reviews_count = serializers.IntegerField(read_only=True)
-    avg_rating = serializers.FloatField(read_only=True)
+    avg_rating = serializers.FloatField(read_only=True, allow_null=True)  # null, пока нет отзывов
 
     class Meta:
         model = Listing

@@ -28,8 +28,9 @@ class ListingQuerySet(models.QuerySet):
         медленно). Подзапросы считают каждую таблицу независимо, ничего
         не умножается, и сортировка по этим полям работает как обычная.
 
-        Coalesce подставляет 0, когда у объявления нет ни просмотров, ни
-        отзывов: подзапрос тогда вернул бы NULL, а он ломает сортировку и JSON.
+        Coalesce подставляет 0 в views_count и reviews_count: «ноль просмотров» и «ноль
+        отзывов» — настоящие числа. А avg_rating без отзывов остаётся NULL: средней
+        оценки нет, и выдумывать 0.0 нельзя (см. сортировку в search_serializers.py).
 
         Модели берём через apps.get_model в момент вызова: если импортировать
         Review на уровне модуля, listings и reviews импортируют друг друга
@@ -62,7 +63,9 @@ class ListingQuerySet(models.QuerySet):
         return self.annotate(
             views_count=Coalesce(Subquery(views, output_field=IntegerField()), 0),
             reviews_count=Coalesce(Subquery(reviews, output_field=IntegerField()), 0),
-            avg_rating=Coalesce(Subquery(rating, output_field=FloatField()), 0.0, output_field=FloatField()),
+            # Без Coalesce: у объявления без отзывов средней оценки нет, и это NULL (в JSON null),
+            # а не 0.0. Ноль выглядел бы как реальная оценка «ноль звёзд», хотя шкала 1-5.
+            avg_rating=Subquery(rating, output_field=FloatField()),
         )
 
 
