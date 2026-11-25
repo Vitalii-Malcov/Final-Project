@@ -48,10 +48,10 @@ class JWTProtectedRoutesMiddleware:
                 # или пользователь удалён/деактивирован.
                 result = self.jwt_auth.authenticate(request)
             except AuthenticationFailed:  # InvalidToken — его подкласс
-                return self._unauthorized('Токен недействителен или просрочен.')
+                return self._unauthorized('Token is invalid or expired.')
 
             if result is None:
-                return self._unauthorized('Учётные данные не предоставлены.')
+                return self._unauthorized('Authentication credentials were not provided.')
 
         return self.get_response(request)
 

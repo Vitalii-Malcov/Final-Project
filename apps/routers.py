@@ -1,3 +1,7 @@
-# Здесь собираются все маршруты API. Заполним, когда появятся urls приложений
-# (этапы 5-9). Пока пусто, чтобы config/urls.py уже мог на этот модуль ссылаться.
-urlpatterns = []
+from django.urls import include, path
+
+# Единая точка сборки API. Префикс api/v1/ добавляет config/urls.py.
+# Остальные приложения (listings, bookings, reviews) подключим на следующих этапах.
+urlpatterns = [
+    path('auth/', include('apps.users.urls')),
+]
