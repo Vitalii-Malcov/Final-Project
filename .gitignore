@@ -14,3 +14,6 @@ media/
 # IDE
 .idea/
 .vscode/
+
+# Защитa проекта (не публикуем)
+docs/defense.md

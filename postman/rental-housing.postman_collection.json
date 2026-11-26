@@ -1,0 +1,1402 @@
+{
+  "info": {
+    "_postman_id": "e6916a8c-ca68-4f90-90ba-cc8d26b68370",
+    "name": "Rental Housing API (демо для защиты)",
+    "description": "Сценарий демонстрации. Запускать по порядку сверху вниз. base_url по умолчанию — локальный docker compose (WEB_PORT=8080). Токены сохраняются скриптами после логина.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://127.0.0.1:8080/api/v1"
+    },
+    {
+      "key": "landlord_token",
+      "value": ""
+    },
+    {
+      "key": "tenant_token",
+      "value": ""
+    },
+    {
+      "key": "password",
+      "value": "change-me"
+    },
+    {
+      "key": "run_id",
+      "value": ""
+    },
+    {
+      "key": "listing_id",
+      "value": ""
+    },
+    {
+      "key": "tenant_listing_id",
+      "value": ""
+    },
+    {
+      "key": "booking_id",
+      "value": ""
+    },
+    {
+      "key": "start_date",
+      "value": ""
+    },
+    {
+      "key": "end_date",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "A. Пользователи и роли",
+      "item": [
+        {
+          "name": "A1. Регистрация арендодателя",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.collectionVariables.set('run_id', Date.now().toString(36));  // новые email на каждый прогон"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('roles = [landlord], пароля в ответе нет', () => { pm.expect(j.roles).to.eql(['landlord']); pm.expect(j).to.not.have.property('password'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/register/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "register",
+                ""
+              ]
+            },
+            "description": "Без токена: register открыт (AllowAny). Роли — группы Django.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Lena\",\n  \"last_name\": \"Landlord\",\n  \"email\": \"landlord_{{run_id}}@example.com\",\n  \"phone\": \"+491111111\",\n  \"roles\": [\n    \"landlord\"\n  ],\n  \"password\": \"{{password}}\",\n  \"re_password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A2. Регистрация арендатора (роль по умолчанию)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.test('roles по умолчанию = [tenant]', () => pm.expect(j.roles).to.eql(['tenant']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/register/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "register",
+                ""
+              ]
+            },
+            "description": "Поле roles не передано, по умолчанию [\"tenant\"].",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"first_name\": \"Tom\",\n  \"last_name\": \"Tenant\",\n  \"email\": \"tenant_{{run_id}}@example.com\",\n  \"phone\": \"+492222222\",\n  \"password\": \"{{password}}\",\n  \"re_password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A3. Вход арендодателя (сохраняет landlord_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('landlord_token', j.access);",
+                  "pm.test('access и refresh выданы', () => { pm.expect(j.access).to.be.a('string'); pm.expect(j.refresh).to.be.a('string'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "Токен сохраняется скриптом во вкладке Tests.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"landlord_{{run_id}}@example.com\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A4. Вход арендатора (сохраняет tenant_token)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('tenant_token', j.access);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/login/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "login",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"email\": \"tenant_{{run_id}}@example.com\",\n  \"password\": \"{{password}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A5. Арендатор создаёт объявление: 403 (нет права)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));",
+                  "const j = pm.response.json();",
+                  "pm.test('сообщение про право', () => pm.expect(j.detail).to.include('permission'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ]
+            },
+            "description": "У группы tenant нет listings.add_listing.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Cosy studio near the park [{{run_id}}]\",\n  \"description\": \"Small studio for one person, five minutes to the park.\",\n  \"city\": \"Hamburg\",\n  \"district\": \"Altona\",\n  \"address\": \"Parkweg 3\",\n  \"price\": \"70.00\",\n  \"rooms\": 1,\n  \"housing_type\": \"studio\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A6. Арендатор добавляет себе роль landlord",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('roles = [landlord, tenant]', () => pm.expect(j.roles).to.eql(['landlord', 'tenant']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/auth/me/roles/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me",
+                "roles",
+                ""
+              ]
+            },
+            "description": "Идемпотентно: повторный запрос тоже 200.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"role\": \"landlord\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "A7. Тот же токен: объявление теперь создаётся",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('tenant_listing_id', j.id);"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ]
+            },
+            "description": "Токен не менялся: права берутся из БД, а не из claim в токене.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Cosy studio near the park [{{run_id}}]\",\n  \"description\": \"Small studio for one person, five minutes to the park.\",\n  \"city\": \"Hamburg\",\n  \"district\": \"Altona\",\n  \"address\": \"Parkweg 3\",\n  \"price\": \"70.00\",\n  \"rooms\": 1,\n  \"housing_type\": \"studio\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "B. Объявления и поиск",
+      "item": [
+        {
+          "name": "B1. Анонимный POST: 401 от middleware",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 401', () => pm.response.to.have.status(401));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ]
+            },
+            "description": "Первый уровень защиты: изменяющий запрос без токена.",
+            "auth": {
+              "type": "noauth"
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Sunny apartment with balkon [{{run_id}}]\",\n  \"description\": \"Quiet street, two bright rooms, balkon facing the garden, 10 minutes to the centre.\",\n  \"city\": \"Berlin\",\n  \"district\": \"Mitte\",\n  \"address\": \"Gartenstr. 12\",\n  \"price\": \"120.00\",\n  \"rooms\": 2,\n  \"housing_type\": \"apartment\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "B2. Арендодатель создаёт объявление",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('listing_id', j.id);",
+                  "pm.test('рейтинг null, счётчики 0', () => { pm.expect(j.avg_rating).to.eql(null); pm.expect(j.views_count).to.eql(0); pm.expect(j.reviews_count).to.eql(0); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ]
+            },
+            "description": "Владелец берётся из токена. avg_rating = null, пока нет отзывов.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{landlord_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"title\": \"Sunny apartment with balkon [{{run_id}}]\",\n  \"description\": \"Quiet street, two bright rooms, balkon facing the garden, 10 minutes to the centre.\",\n  \"city\": \"Berlin\",\n  \"district\": \"Mitte\",\n  \"address\": \"Gartenstr. 12\",\n  \"price\": \"120.00\",\n  \"rooms\": 2,\n  \"housing_type\": \"apartment\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "B3. Поиск с фильтрами (аноним)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('найдено, и все результаты подходят под фильтры', () => { pm.expect(j.count).to.be.above(0); j.results.forEach(r => { pm.expect(r.city.toLowerCase()).to.eql('berlin'); pm.expect(Number(r.price)).to.be.at.most(150); pm.expect(r.rooms).to.be.at.least(2); }); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/?search=balkon&city=berlin&price_max=150&rooms_min=2&housing_type=apartment,house&ordering=-rating",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "balkon"
+                },
+                {
+                  "key": "city",
+                  "value": "berlin"
+                },
+                {
+                  "key": "price_max",
+                  "value": "150"
+                },
+                {
+                  "key": "rooms_min",
+                  "value": "2"
+                },
+                {
+                  "key": "housing_type",
+                  "value": "apartment,house"
+                },
+                {
+                  "key": "ordering",
+                  "value": "-rating"
+                }
+              ]
+            },
+            "description": "Все слова из search — в заголовке или описании; город без учёта регистра. Запрос попадает в историю.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "B4. Второй поиск (для популярных запросов)",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/?search=balkon&ordering=price",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "search",
+                  "value": "balkon"
+                },
+                {
+                  "key": "ordering",
+                  "value": "price"
+                }
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "B5. Неверный фильтр: 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));",
+                  "const j = pm.response.json();",
+                  "pm.test('ошибка указывает поле', () => pm.expect(j).to.have.property('price_min'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/?price_min=abc",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "price_min",
+                  "value": "abc"
+                }
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "B6. Карточка (аноним): просмотр засчитан",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('views_count = 1', () => pm.expect(j.views_count).to.eql(1));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                ""
+              ]
+            },
+            "description": "Просмотры владельца не считаются, аноним считается.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "C. Бронирование",
+      "item": [
+        {
+          "name": "C1. Арендатор бронирует (3 ночи)",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const d = n => { const x = new Date(); x.setDate(x.getDate() + n); return x.toISOString().slice(0, 10); };",
+                  "pm.collectionVariables.set('start_date', d(10));",
+                  "pm.collectionVariables.set('end_date', d(13));"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));",
+                  "const j = pm.response.json();",
+                  "pm.collectionVariables.set('booking_id', j.id);",
+                  "pm.test('3 ночи x 120.00 = 360.00, статус pending', () => { pm.expect(j.total_price).to.eql('360.00'); pm.expect(j.status).to.eql('pending'); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bookings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                ""
+              ]
+            },
+            "description": "Цена фиксируется при создании. Бронь начинается со статуса pending.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"listing\": \"{{listing_id}}\",\n  \"start_date\": \"{{start_date}}\",\n  \"end_date\": \"{{end_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "C2. Повторная заявка на те же даты: 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bookings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                ""
+              ]
+            },
+            "description": "Конфликт СОСТОЯНИЯ (своя заявка уже есть) -> 409.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"listing\": \"{{listing_id}}\",\n  \"start_date\": \"{{start_date}}\",\n  \"end_date\": \"{{end_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "C3. Заезд в прошлом: 400",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 400', () => pm.response.to.have.status(400));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bookings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                ""
+              ]
+            },
+            "description": "Неверные ДАННЫЕ запроса -> 400.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"listing\": \"{{listing_id}}\",\n  \"start_date\": \"2020-01-01\",\n  \"end_date\": \"2020-01-03\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "C4. Арендодатель смотрит заявки",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('наша бронь в списке', () => pm.expect(j.results.map(b => b.id)).to.include(pm.collectionVariables.get('booking_id')));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bookings/requests/?status=pending",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                "requests",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "status",
+                  "value": "pending"
+                }
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{landlord_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "C5. Арендодатель подтверждает",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('status = confirmed', () => pm.expect(j.status).to.eql('confirmed'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "PATCH",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/bookings/{{booking_id}}/confirm/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                "{{booking_id}}",
+                "confirm",
+                ""
+              ]
+            },
+            "description": "Внутри transaction.atomic() и select_for_update() на строке объявления.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{landlord_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        },
+        {
+          "name": "C6. Даты заняты: 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));",
+                  "const j = pm.response.json();",
+                  "pm.test('сообщение: уже забронировано', () => pm.expect(j.detail).to.include('already booked'));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/bookings/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "bookings",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"listing\": \"{{listing_id}}\",\n  \"start_date\": \"{{start_date}}\",\n  \"end_date\": \"{{end_date}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "C7. Удалить объявление с будущей confirmed-бронью: 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "DELETE",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{landlord_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "D. Отзыв и популярное",
+      "item": [
+        {
+          "name": "D1. Отзыв до проживания: 403",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 403', () => pm.response.to.have.status(403));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/reviews/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                "reviews",
+                ""
+              ]
+            },
+            "description": "Отзыв возможен только после завершённой confirmed-брони.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 5,\n  \"comment\": \"Wonderful flat, very clean and quiet.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "D2. Отзыв после проживания: 201",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 201', () => pm.response.to.have.status(201));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/reviews/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                "reviews",
+                ""
+              ]
+            },
+            "description": "ПЕРЕД ЭТИМ ШАГОМ выполните команду «машины времени» из docs/defense.md (переносит заезд и выезд брони в прошлое): через API бронь в прошлом создать нельзя.",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 5,\n  \"comment\": \"Wonderful flat, very clean and quiet.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "D3. Повторный отзыв: 409",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 409', () => pm.response.to.have.status(409));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/reviews/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                "reviews",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"rating\": 1,\n  \"comment\": \"Second attempt should be rejected.\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "D4. Карточка: avg_rating и reviews_count",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('avg_rating = 5, reviews_count = 1', () => { pm.expect(j.avg_rating).to.eql(5); pm.expect(j.reviews_count).to.eql(1); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/{{listing_id}}/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "{{listing_id}}",
+                ""
+              ]
+            },
+            "description": "Считается подзапросом (Subquery), а не хранится в таблице.",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "D5. Популярные запросы",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('balkon в списке, count >= 2', () => { const k = j.find(x => x.keyword === 'balkon'); pm.expect(k).to.exist; pm.expect(k.count).to.be.at.least(2); });"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/searches/popular/?limit=5",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "searches",
+                "popular",
+                ""
+              ],
+              "query": [
+                {
+                  "key": "limit",
+                  "value": "5"
+                }
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "D6. Популярные объявления",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('есть результаты', () => pm.expect(j.count).to.be.above(0));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/listings/popular/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "listings",
+                "popular",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "noauth"
+            }
+          }
+        },
+        {
+          "name": "D7. Профиль арендатора: роли",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test('Status 200', () => pm.response.to.have.status(200));",
+                  "const j = pm.response.json();",
+                  "pm.test('две роли', () => pm.expect(j.roles).to.eql(['landlord', 'tenant']));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{base_url}}/auth/me/",
+              "host": [
+                "{{base_url}}"
+              ],
+              "path": [
+                "auth",
+                "me",
+                ""
+              ]
+            },
+            "description": "",
+            "auth": {
+              "type": "bearer",
+              "bearer": [
+                {
+                  "key": "token",
+                  "value": "{{tenant_token}}",
+                  "type": "string"
+                }
+              ]
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
